@@ -64,9 +64,10 @@ with st.sidebar:
     subject_label = st.selectbox("Przedmiot (poziom podstawowy)", list(SUBJECTS))
     kind = st.radio("Typ szkoły", ["wszystkie", "LO", "Technikum"], horizontal=True)
     st.caption(
-        "Filtry przeliczają KPI, wykresy i tabele. Typ szkoły działa na "
-        "wskaźnikach liczonych ze szkół (KPI, Rozwarstwienie); mapa i ranking "
-        "powiatów pochodzą z danych powiatowych CKE."
+        "Każdy filtr przelicza KPI, wykresy i tabele. Przy typie szkoły "
+        "innym niż „wszystkie” wskaźniki powiatowe liczone są z agregacji "
+        "danych szkolnych (mogą się minimalnie różnić od oficjalnych sum "
+        "powiatowych CKE)."
     )
     st.divider()
     st.caption(
@@ -88,6 +89,24 @@ s_year = s_scope[s_scope["year"] == year]
 if kind != "wszystkie":
     s_year = s_year[s_year["school_kind"] == kind]
 
+
+# Wspólny "widok powiatowy" dla mapy, rankingów, scattera i trendów:
+# oficjalne dane powiatowe CKE, a przy filtrze typu szkoły — agregacja
+# ze szkół (oficjalne dane powiatowe nie mają podziału LO/technikum).
+@st.cache_data(show_spinner=False)
+def county_level_for_kind(vois_key: tuple[str, ...], kind_key: str) -> pd.DataFrame:
+    base = schools
+    if vois_key:
+        base = base[base["voivodeship"].isin(list(vois_key))]
+    return data.aggregate_schools_to_counties(base[base["school_kind"] == kind_key])
+
+
+if kind == "wszystkie":
+    cc_scope = c_scope
+else:
+    cc_scope = county_level_for_kind(tuple(vois), kind)
+cc_year = cc_scope[cc_scope["year"] == year]
+
 if len(vois) == 0:
     scope_label = "Polska"
 elif len(vois) <= 3:
@@ -95,7 +114,7 @@ elif len(vois) <= 3:
 else:
     scope_label = f"{len(vois)} województw"
 
-if c_year.empty or s_year.empty:
+if c_year.empty or s_year.empty or cc_year.empty:
     st.warning(
         "Brak danych dla wybranej kombinacji filtrów — poszerz zakres "
         "(np. inny rok lub typ szkoły; w 2023 r. Formuła 2023 obejmowała "
@@ -141,17 +160,10 @@ pr_share = (
     else float("nan")
 )
 
-# Najsłabszy powiat liczony z agregacji szkół w bieżącym filtrze (reaguje
-# także na typ szkoły); próg ≥100 zdających odsiewa niestabilne odsetki.
-county_agg = (
-    s_year.dropna(subset=[pass_col, n_col])
-    .assign(_passed=lambda d: d[pass_col] * d[n_col])
-    .groupby(["county", "voivodeship"], as_index=False)
-    .agg(n=(n_col, "sum"), _passed=("_passed", "sum"))
-    .assign(pass_rate=lambda d: d["_passed"] / d["n"])
-)
-county_big = county_agg[county_agg["n"] >= 100]
-worst = county_big.nsmallest(1, "pass_rate")
+# Najsłabszy powiat w bieżącym filtrze (widok powiatowy reaguje też na typ
+# szkoły); próg ≥100 zdających odsiewa niestabilne odsetki.
+county_big = cc_year[(cc_year[n_col] >= 100) & cc_year[pass_col].notna()]
+worst = county_big.nsmallest(1, pass_col)
 
 k1, k2, k3, k4 = st.columns(4)
 k1.metric(
@@ -176,7 +188,7 @@ if not worst.empty:
     k4.metric(
         "Najsłabszy powiat (≥ 100 zdających)",
         str(w["county"]),
-        delta=f"{fmt_pl(w['pass_rate'], 1)}% — {w['voivodeship']}",
+        delta=f"{fmt_pl(w[pass_col], 1)}% — {w['voivodeship']}",
         delta_color="off",
     )
 else:
@@ -196,10 +208,18 @@ tab_gap, tab_map, tab_split, tab_trend, tab_about = st.tabs(
 with tab_gap:
     col_bar, col_heat = st.columns(2)
 
+    # W latach niepełnych Formułę 2023 zdawały niemal wyłącznie licea, więc
+    # rocznik jest miarodajny dla "wszystkie" (z zastrzeżeniem) i dla "LO",
+    # ale dla techników (16 szkół w 2023) to szum — pomijamy zamiast pokazywać
+    # mylące słupki.
+    years_shown = [
+        y for y in YEARS if kind in ("wszystkie", "LO") or y not in partial_years
+    ]
+
     with col_bar:
         rows = []
-        for y in YEARS:
-            g = c_scope[c_scope["year"] == y]
+        for y in years_shown:
+            g = cc_scope[cc_scope["year"] == y]
             rows += [
                 {"rok": y, "przedmiot": "matematyka",
                  "zdawalność": data.weighted_mean(g, "math_pp_pass_rate", "math_pp_n")},
@@ -212,9 +232,9 @@ with tab_gap:
             ]
         tidy = pd.DataFrame(rows).dropna(subset=["zdawalność"])
         st.plotly_chart(
-            charts.subject_pass_bar(tidy, scope_label), width="stretch"
+            charts.subject_pass_bar(tidy, f"{scope_label}{kind_note}"), width="stretch"
         )
-        subj_mat = c_scope[["math_pp_pass_rate", "pol_pp_pass_rate", "eng_pp_pass_rate"]]
+        subj_mat = cc_scope[["math_pp_pass_rate", "pol_pp_pass_rate", "eng_pp_pass_rate"]]
         share_math_worst = (subj_mat.idxmin(axis=1) == "math_pp_pass_rate").mean()
         st.caption(
             f"💡 **Wniosek:** matematyka jest najsłabszym z trzech przedmiotów "
@@ -226,7 +246,8 @@ with tab_gap:
 
     with col_heat:
         heat = (
-            c_scope.groupby(["voivodeship", "year"])
+            cc_scope[cc_scope["year"].isin(years_shown)]
+            .groupby(["voivodeship", "year"])
             .apply(lambda g: data.weighted_mean(g, pass_col, n_col), include_groups=False)
             .unstack("year")
             .sort_index(ascending=False)
@@ -251,12 +272,12 @@ with tab_map:
         "Wskaźnik PR zawsze dotyczy matematyki.",
     )
 
-    map_df = c_year.copy()
+    map_df = cc_year.copy()
     if metric_label == "zdawalność (%)":
         map_df["value"] = map_df[pass_col]
         cfg = dict(
             value_label="%", color_scale="RdYlGn",
-            title=f"Zdawalność: {subject_label} PP po powiatach — {year}",
+            title=f"Zdawalność: {subject_label} PP po powiatach — {year}{kind_note}",
             caption=f"💡 **Wniosek:** rozstrzał między powiatami sięga "
             f"kilkudziesięciu p.p. i jest trwały między latami — w najsłabszych "
             f"powiatach nawet co trzeci maturzysta oblewa. Lokalizacja to "
@@ -267,7 +288,7 @@ with tab_map:
         map_df["value"] = map_df[n_col] * (1 - map_df[pass_col] / 100)
         cfg = dict(
             value_label="osoby", color_scale="Reds",
-            title=f"Szacowana liczba oblewających: {subject_label} PP — {year}",
+            title=f"Szacowana liczba oblewających: {subject_label} PP — {year}{kind_note}",
             caption="💡 **Wniosek:** wolumen rynku siedzi w metropoliach — "
             "Warszawa, Wrocław, Kraków czy Poznań mają zdawalność powyżej "
             "średniej, ale to tam mieszka najwięcej osób do uratowania. "
@@ -279,7 +300,7 @@ with tab_map:
         map_df["value"] = map_df["ambition_ratio"] * 100
         cfg = dict(
             value_label="% PP", color_scale="Blues",
-            title=f"Podchodzący do matematyki PR jako % zdających PP — {year}",
+            title=f"Podchodzący do matematyki PR jako % zdających PP — {year}{kind_note}",
             caption="💡 **Wniosek:** ambicje koncentrują się w metropoliach "
             "i na południowym wschodzie; są powiaty, gdzie do rozszerzenia "
             "nie podchodzi nikt. Tam, gdzie podstawa kuleje, znika też rynek "
@@ -427,8 +448,8 @@ with tab_trend:
         if subject_label != "matematyka":
             st.info("Wskaźnik ambicji (PR/PP) dotyczy matematyki — wykres "
                     "pokazuje matematykę niezależnie od filtra przedmiotu.")
-        st.plotly_chart(charts.ambition_scatter(c_year, year), width="stretch")
-        sc_df = c_year.dropna(subset=["math_pp_pass_rate", "ambition_ratio"])
+        st.plotly_chart(charts.ambition_scatter(cc_year, year), width="stretch")
+        sc_df = cc_year.dropna(subset=["math_pp_pass_rate", "ambition_ratio"])
         corr_txt = ""
         if len(sc_df) >= 10:
             corr = sc_df["math_pp_pass_rate"].corr(sc_df["ambition_ratio"])
@@ -443,20 +464,42 @@ with tab_trend:
         )
 
     with col_tr:
-        lo_scope = s_scope[s_scope["school_kind"] == "LO"]
-        trend = pd.DataFrame(
-            {
-                "cała populacja": [
-                    data.weighted_mean(c_scope[c_scope["year"] == y], pass_col, n_col)
-                    for y in YEARS
-                ],
-                "tylko LO": [
-                    data.weighted_mean(lo_scope[lo_scope["year"] == y], pass_col, n_col)
-                    for y in YEARS
-                ],
-            },
-            index=YEARS,
-        )
+        if kind == "wszystkie":
+            # Linia "tylko LO" to metodologiczne odniesienie — jedyna populacja
+            # porównywalna przez wszystkie lata (2023 = niemal same licea).
+            lo_scope = s_scope[s_scope["school_kind"] == "LO"]
+            trend = pd.DataFrame(
+                {
+                    "cała populacja": [
+                        data.weighted_mean(c_scope[c_scope["year"] == y], pass_col, n_col)
+                        for y in YEARS
+                    ],
+                    "tylko LO": [
+                        data.weighted_mean(lo_scope[lo_scope["year"] == y], pass_col, n_col)
+                        for y in YEARS
+                    ],
+                },
+                index=YEARS,
+            )
+        else:
+            # Przy filtrze typu szkoły: wybrany typ + odniesienie do wszystkich.
+            # Lata niemiarodajne dla wybranego typu → NaN (2023 = 16 techników;
+            # dla LO rok 2023 jest pełnoprawny).
+            trend = pd.DataFrame(
+                {
+                    f"tylko {kind}": [
+                        data.weighted_mean(cc_scope[cc_scope["year"] == y], pass_col, n_col)
+                        if (kind == "LO" or y not in partial_years)
+                        else float("nan")
+                        for y in YEARS
+                    ],
+                    "wszystkie szkoły": [
+                        data.weighted_mean(c_scope[c_scope["year"] == y], pass_col, n_col)
+                        for y in YEARS
+                    ],
+                },
+                index=YEARS,
+            )
         st.plotly_chart(
             charts.trend_line(trend, subject_label, scope_label, partial_years),
             width="stretch",

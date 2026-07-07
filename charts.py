@@ -54,7 +54,8 @@ def _base_layout(fig: go.Figure, title: str, height: int = 450) -> go.Figure:
         separators=PL_SEPARATORS,
         height=height,
         margin=dict(l=10, r=10, t=60, b=10),
-        legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0, title=None),
+        # Legenda POD wykresem — na górze nachodziła na tytuł.
+        legend=dict(orientation="h", yanchor="top", y=-0.18, x=0, title=None),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
     )
@@ -75,10 +76,14 @@ def subject_pass_bar(tidy: pd.DataFrame, scope_label: str) -> go.Figure:
         color="przedmiot",
         barmode="group",
         color_discrete_map=SUBJECT_COLORS,
+        category_orders={"przedmiot": list(SUBJECT_COLORS)},
         labels={"rok": "rok egzaminu", "zdawalność": "zdawalność (%)"},
     )
     fig.update_traces(hovertemplate="%{fullData.name}<br>rok %{x}: <b>%{y:.1f}%</b><extra></extra>")
-    fig.update_yaxes(range=[70, 100])
+    # Zakres osi dopasowany do danych (np. technika schodzą poniżej 70%),
+    # ale nigdy nie zaczynamy wyżej niż 70, żeby nie dramatyzować różnic.
+    y_floor = min(70, (tidy["zdawalność"].min() // 5) * 5 - 5)
+    fig.update_yaxes(range=[y_floor, 100])
     fig.update_xaxes(tickvals=sorted(tidy["rok"].unique()), type="category")
     return _base_layout(
         fig, f"Zdawalność przedmiotów obowiązkowych (PP) vs cała matura — {scope_label}"
@@ -122,9 +127,22 @@ def county_map(
     title: str,
     color_scale: str = "RdYlGn",
     hover_extra: dict | None = None,
+    clip_quantiles: tuple[float, float] | None = (0.02, 0.98),
 ) -> go.Figure:
-    """df: kolumny [teryt_county, county, voivodeship, value_col, ...]."""
+    """df: kolumny [teryt_county, county, voivodeship, value_col, ...].
+
+    clip_quantiles: przycięcie zakresu skali barw (kwantyle) — pojedynczy
+    ekstremalny powiat (np. Warszawa wolumenem albo mikropowiaty odsetkiem)
+    nie spłaszcza wtedy kolorów całej reszty mapy. Wartości poza zakresem
+    dostają kolor krańcowy.
+    """
     plot_df = df.dropna(subset=[value_col])
+    range_color = None
+    if clip_quantiles and len(plot_df) > 20:
+        lo = float(plot_df[value_col].quantile(clip_quantiles[0]))
+        hi = float(plot_df[value_col].quantile(clip_quantiles[1]))
+        if hi > lo:
+            range_color = (lo, hi)
     fig = px.choropleth(
         plot_df,
         geojson=geojson,
@@ -132,6 +150,7 @@ def county_map(
         featureidkey=feature_key,
         color=value_col,
         color_continuous_scale=color_scale,
+        range_color=range_color,
         hover_name="county",
         hover_data={
             "teryt_county": False,
@@ -252,12 +271,16 @@ def trend_line(
 ) -> go.Figure:
     """trend: index = lata, kolumny = serie (np. 'cała populacja', 'tylko LO')."""
     fig = go.Figure()
-    styles = {
-        "cała populacja": dict(color=COLOR_MATH, dash="solid", symbol="circle"),
-        "tylko LO": dict(color=COLOR_POL, dash="dash", symbol="square"),
-    }
-    for col in trend.columns:
-        st_ = styles.get(col, dict(color=COLOR_NEUTRAL, dash="dot", symbol="diamond"))
+    # Style pozycyjne: pierwsza seria = główna (czerwona ciągła),
+    # druga = odniesienie (niebieska przerywana) — nazwy serii bywają różne
+    # w zależności od filtra typu szkoły.
+    positional_styles = [
+        dict(color=COLOR_MATH, dash="solid", symbol="circle"),
+        dict(color=COLOR_POL, dash="dash", symbol="square"),
+        dict(color=COLOR_NEUTRAL, dash="dot", symbol="diamond"),
+    ]
+    for idx, col in enumerate(trend.columns):
+        st_ = positional_styles[min(idx, len(positional_styles) - 1)]
         fig.add_trace(
             go.Scatter(
                 x=trend.index,
@@ -272,8 +295,13 @@ def trend_line(
     # Adnotacja o latach niepełnego pokrycia — wprost na wykresie, nie tylko
     # w tekście (w 2023 r. Formuła 2023 obejmowała niemal wyłącznie LO).
     for y in sorted(partial_years):
-        if y in trend.index:
-            first_col = trend.columns[0]
+        if y not in trend.index:
+            continue
+        # Kotwiczymy adnotację w pierwszej serii, która ma wartość w tym roku
+        # (seria przefiltrowana po typie szkoły może nie mieć roku 2023).
+        anchor_cols = [c for c in trend.columns if pd.notna(trend.loc[y, c])]
+        if anchor_cols:
+            first_col = anchor_cols[0]
             fig.add_annotation(
                 x=y,
                 y=float(trend.loc[y, first_col]),

@@ -403,11 +403,101 @@ def load_schools(use_cache: bool = True) -> pd.DataFrame:
     return _load_with_cache("schools", use_cache)
 
 
+def _ring_area(ring: list) -> float:
+    """Pole ze wzoru sznurowadłowego w płaszczyźnie lon/lat — znak mówi
+    o kierunku nawinięcia pierścienia (dodatnie = przeciwnie do wskazówek)."""
+    area = 0.0
+    for i in range(len(ring) - 1):
+        x1, y1 = ring[i][0], ring[i][1]
+        x2, y2 = ring[i + 1][0], ring[i + 1][1]
+        area += x1 * y2 - x2 * y1
+    return area / 2.0
+
+
+def _rewind_geojson(geojson: dict, exterior_ccw: bool) -> dict:
+    """Normalizuje kierunek nawinięcia poligonów.
+
+    Renderer map plotly (d3-geo, poligony sferyczne) interpretuje pierścień
+    nawinięty w złą stronę jako "cały glob minus obszar" — powiat renderuje
+    się wtedy jako zielona płachta zakrywająca mapę. Plik z PRG ma nawinięcia
+    mieszane, więc wymuszamy jednolite: zewnętrzny pierścień zgodnie z
+    exterior_ccw, dziury odwrotnie.
+    """
+    for feature in geojson["features"]:
+        geom = feature["geometry"]
+        if geom["type"] == "Polygon":
+            polygons = [geom["coordinates"]]
+        elif geom["type"] == "MultiPolygon":
+            polygons = geom["coordinates"]
+        else:
+            continue
+        for polygon in polygons:
+            for i, ring in enumerate(polygon):
+                is_ccw = _ring_area(ring) > 0
+                want_ccw = exterior_ccw if i == 0 else not exterior_ccw
+                if is_ccw != want_ccw:
+                    ring.reverse()
+    return geojson
+
+
+def aggregate_schools_to_counties(schools: pd.DataFrame) -> pd.DataFrame:
+    """Agreguje ramkę szkolną do poziomu powiat × rok, w układzie kolumn
+    zgodnym z ramką powiatową.
+
+    Po co: oficjalne dane powiatowe CKE nie mają podziału na typ szkoły.
+    Gdy użytkownik filtruje po typie (LO/technikum), widoki powiatowe
+    (mapa, scatter, rankingi, trendy) liczymy z agregacji szkół — dzięki
+    temu KAŻDY filtr przelicza KAŻDY widok. Zdawalności/średnie ważone
+    liczbą zdających; sumy mogą się minimalnie różnić (<0,2%) od oficjalnych
+    agregatów CKE, bo plik szkolny nie obejmuje zdających przypisanych
+    wprost do OKE.
+    """
+
+    key = ["year", "teryt_county", "county", "voivodeship"]
+    work = schools[key + ["overall_certificates", "overall_taken"]].copy()
+
+    # Średnia ważona jako suma(licznik)/suma(mianownik) w jednym groupby-sum —
+    # wektorowo (pętla apply po ~1,1 tys. grup była ~50× wolniejsza, a to
+    # przelicza się przy każdej zmianie filtra typu szkoły).
+    ratio_cols = []
+    for p in ("math_pp", "pol_pp", "eng_pp", "math_pr"):
+        n = schools[f"{p}_n"].fillna(0)
+        work[f"{p}_n"] = n
+        for metric in ("pass_rate", "mean"):
+            col = f"{p}_{metric}"
+            if col not in schools.columns:
+                continue
+            # Szkoły z pustą metryką nie wchodzą ani do licznika, ani do wag
+            # (spójnie z weighted_mean).
+            weight = n.where(schools[col].notna(), 0)
+            work[f"__num_{col}"] = (schools[col] * weight).fillna(0)
+            work[f"__den_{col}"] = weight
+            ratio_cols.append(col)
+
+    agg = work.groupby(key, as_index=False).sum(min_count=1)
+    for col in ratio_cols:
+        den = agg[f"__den_{col}"]
+        agg[col] = (agg[f"__num_{col}"] / den).where(den > 0)
+        agg = agg.drop(columns=[f"__num_{col}", f"__den_{col}"])
+
+    agg["overall_pass_rate"] = (
+        100.0 * agg["overall_certificates"] / agg["overall_taken"]
+    ).where(agg["overall_taken"] > 0)
+    agg["ambition_ratio"] = (agg["math_pr_n"] / agg["math_pp_n"]).where(
+        agg["math_pp_n"] > 0
+    )
+    return agg
+
+
 def load_county_geojson() -> dict:
     """Granice powiatów (GeoJSON, WGS84) z kodem TERYT w properties.JPT_KOD_JE —
-    dopasowanie do ramek po kolumnie teryt_county."""
+    dopasowanie do ramek po kolumnie teryt_county.
+
+    d3-geo (silnik map plotly) wymaga zewnętrznych pierścieni nawiniętych
+    ZGODNIE z ruchem wskazówek zegara (odwrotnie niż RFC 7946) — stąd
+    exterior_ccw=False."""
     with open(GEO_DIR / "powiaty.geojson", encoding="utf-8") as f:
-        return json.load(f)
+        return _rewind_geojson(json.load(f), exterior_ccw=False)
 
 
 def partial_coverage_years(schools: pd.DataFrame, threshold: float = 0.10) -> set[int]:
