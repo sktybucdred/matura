@@ -348,6 +348,86 @@ def wage_scatter(df: pd.DataFrame, exam_year: int, wage_year: int) -> go.Figure:
 
 
 # ---------------------------------------------------------------------------
+# 6c. Podwójny scatter: zamożność × wyniki / ambicje (dowód dla wniosku nr 4)
+# ---------------------------------------------------------------------------
+def wage_relation_panels(
+    df: pd.DataFrame,
+    exam_year: int,
+    wage_year: int,
+    corr_pass: float,
+    corr_amb: float,
+) -> go.Figure:
+    """Dwa panele per powiat: (a) płace × zdawalność matematyki PP,
+    (b) płace × odsetek podchodzących do PR. Rozmiar kropki = liczba
+    zdających; w tytułach paneli korelacje ważone liczbą zdających."""
+    from plotly.subplots import make_subplots
+
+    plot_df = df.dropna(
+        subset=["wage", "math_pp_pass_rate", "ambition_ratio", "math_pp_n"]
+    ).copy()
+    plot_df["ambition_pct"] = plot_df["ambition_ratio"] * 100
+
+    fig = make_subplots(
+        rows=1,
+        cols=2,
+        horizontal_spacing=0.09,
+        subplot_titles=(
+            f"zdawalność — korelacja ważona: {fmt_pl(corr_pass, 2)}",
+            f"udział zdających PR — korelacja ważona: {fmt_pl(corr_amb, 2)}",
+        ),
+    )
+    # Wspólna skala rozmiaru kropek dla obu paneli (sizemode="area").
+    sizeref = 2.0 * float(plot_df["math_pp_n"].max()) / (34.0**2)
+    panels = [
+        (1, "math_pp_pass_rate", "zdawalność matematyki PP (%)", COLOR_MATH),
+        (2, "ambition_pct", "podchodzący do PR (% zdających PP)", COLOR_POL),
+    ]
+    for col, ycol, ylabel, color in panels:
+        fig.add_trace(
+            go.Scatter(
+                x=plot_df["wage"],
+                y=plot_df[ycol],
+                mode="markers",
+                text=plot_df["county"] + " (" + plot_df["voivodeship"] + ")",
+                marker=dict(
+                    size=plot_df["math_pp_n"],
+                    sizemode="area",
+                    sizeref=sizeref,
+                    sizemin=3,
+                    color=color,
+                    opacity=0.45,
+                    line=dict(width=0.5, color="white"),
+                ),
+                hovertemplate=(
+                    "%{text}<br>płace: %{x:,.0f} zł<br>"
+                    + ylabel
+                    + ": <b>%{y:.1f}%</b><extra></extra>"
+                ),
+                showlegend=False,
+            ),
+            row=1,
+            col=col,
+        )
+        fig.update_xaxes(
+            title_text=f"przeciętne wynagrodzenie brutto, zł ({wage_year})",
+            title_font_size=12,
+            row=1,
+            col=col,
+        )
+        fig.update_yaxes(title_text=ylabel, title_font_size=12, row=1, col=col)
+
+    fig = _base_layout(
+        fig,
+        f"Zamożność powiatu a wyniki i ambicje — matura {exam_year}, płace {wage_year} "
+        f"(rozmiar kropki = liczba zdających)",
+        height=470,
+    )
+    for annotation in fig.layout.annotations:  # tytuły paneli z make_subplots
+        annotation.font.size = 13
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # 7. Liniowy: trend zdawalności
 # ---------------------------------------------------------------------------
 def trend_line(

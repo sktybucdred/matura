@@ -637,10 +637,32 @@ with tab_summary:
    poniżej mediany — oraz na wsi, gdzie podaż stacjonarnych korepetycji
    jest najmniejsza (szkoły wiejskie słabsze nawet w ramach tego samego
    typu szkoły).
-
-### Gdzie targetować (powiaty, {LATEST})
 """
     )
+
+    # Wizualny dowód dla wniosku nr 4 — bez niego korelacje wisiałyby
+    # w powietrzu jako gołe liczby.
+    corr_unweighted = float(
+        c_last[["wage", "math_pp_pass_rate"]].dropna().corr().iloc[0, 1]
+    )
+    st.plotly_chart(
+        charts.wage_relation_panels(
+            c_last, LATEST, wage_year_full, corr_wage_pass, corr_wage_amb
+        ),
+        width="stretch",
+    )
+    st.caption(
+        f"📐 **Metodologia:** korelacje ważone liczbą zdających — mikropowiaty "
+        f"to głównie szum małych prób; bez ważenia korelacja płace↔zdawalność "
+        f"spada do {fmt_pl(corr_unweighted, 2)} (podajemy to wprost, dobór "
+        f"metody to nie cherry-picking). Płace GUS za {wage_year_full} r., "
+        f"wyniki matury za {LATEST} r. — najnowsze dostępne roczniki obu "
+        f"źródeł; roczne przesunięcie nie wpływa na wniosek, bo struktura płac "
+        f"między powiatami zmienia się powoli. Jak wszędzie w tym dashboardzie: "
+        f"**współwystępowanie, nie przyczynowość**."
+    )
+
+    st.markdown(f"### Gdzie targetować (powiaty, {LATEST})")
 
     with_wage = c_last.dropna(subset=["failers", "wage"])
     med_fail = float(with_wage["failers"].median())
