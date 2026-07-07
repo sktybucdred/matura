@@ -483,8 +483,12 @@ with tab_about:
   zdawalność wyższa niż w lipcowych komunikatach prasowych CKE.
 - Lata: **{YEARS[0]}–{LATEST}**; {fmt_pl(len(counties))} wierszy powiatowych,
   {fmt_pl(len(schools))} szkolnych ({fmt_pl(n_schools.max())} szkół w {int(n_schools.idxmax())} r.).
-- Granice powiatów: **Geoportal / PRG** (WGS84, geometria uproszczona), kody
-  TERYT — [github.com/waszkiewiczja/GeoJSON-Polska-Wojewodztwa-Powiaty-Gminy](https://github.com/waszkiewiczja/GeoJSON-Polska-Wojewodztwa-Powiaty-Gminy).
+- Granice powiatów: **Państwowy Rejestr Granic (PRG)** — dane publiczne
+  GUGiK udostępniane nieodpłatnie przez [Geoportal](https://www.geoportal.gov.pl)
+  (art. 40a ust. 2 pkt 1 ustawy Prawo geodezyjne i kartograficzne).
+  Konwersja do GeoJSON/WGS84 i uproszczenie geometrii:
+  [github.com/waszkiewiczja/GeoJSON-Polska-Wojewodztwa-Powiaty-Gminy](https://github.com/waszkiewiczja/GeoJSON-Polska-Wojewodztwa-Powiaty-Gminy)
+  (stan granic: sierpień 2025). Dopasowanie do danych CKE po kodach TERYT.
 
 ### Decyzje przy czyszczeniu danych
 
