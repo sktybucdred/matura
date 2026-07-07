@@ -250,11 +250,20 @@ def add_derived_columns(df: pd.DataFrame) -> pd.DataFrame:
     # Wskaźnik ambicji: jaki odsetek zdających matematykę PP porywa się też na
     # rozszerzenie. PR nie ma zdawalności (brak progu), więc porównujemy
     # uczestnictwo, nie wyniki.
-    df["ambition_ratio"] = df["math_pr_n"] / df["math_pp_n"]
+    # Pusta komórka w "liczba zdających" PR oznacza ZERO zdających, nie brak
+    # danych — portal raportuje nawet n=1, a utajnia dopiero metryki wynikowe
+    # przy małym n. Dlatego fillna(0): zero podchodzących do rozszerzenia to
+    # realna informacja o (braku) ambicji, nie luka w danych.
+    df["ambition_ratio"] = df["math_pr_n"].fillna(0) / df["math_pp_n"]
 
-    # Luka: o ile zdawalność samej matematyki PP jest niższa od zdawalności
-    # całej matury. Duża dodatnia wartość = matematyka jako wąskie gardło.
-    df["math_gap"] = df["overall_pass_rate"] - df["math_pp_pass_rate"]
+    # Wąskie gardło: różnica zdawalności języka polskiego/angielskiego i
+    # matematyki (wszystko na poziomie podstawowym). Zdawalności OGÓLNEJ
+    # (świadectwo) nie używamy do tego porównania — jest z konstrukcji niższa
+    # od zdawalności pojedynczego przedmiotu (oblanie czegokolwiek = brak
+    # świadectwa). Wartość dodatnia = matematyka wypada gorzej niż przedmiot
+    # odniesienia, czyli jest wąskim gardłem matury.
+    df["pol_math_gap"] = df["pol_pp_pass_rate"] - df["math_pp_pass_rate"]
+    df["eng_math_gap"] = df["eng_pp_pass_rate"] - df["math_pp_pass_rate"]
 
     # Odchylenie od średniej krajowej (ważonej liczbą zdających) w danym roku —
     # pozwala porównywać powiaty/szkoły między latami mimo wahań trudności arkusza.
@@ -330,6 +339,24 @@ def load_schools() -> pd.DataFrame:
     return add_school_flags(df)
 
 
+def partial_coverage_years(schools: pd.DataFrame, threshold: float = 0.10) -> set[int]:
+    """Lata, w których Formuła 2023 nie obejmowała jeszcze pełnej populacji
+    maturzystów. W 2023 r. zdawali ją niemal wyłącznie absolwenci LO (technika
+    kończyły Formułę 2015): technika to ~0,7% szkół vs ~37% w kolejnych latach.
+
+    Wykrywamy to DYNAMICZNIE (udział techników < threshold), zamiast
+    hardcodować rok 2023 — dzięki temu dorzucenie pliku 2026 nie wymaga zmian,
+    a porównania LO/technikum i miasto/wieś automatycznie pomijają lata
+    niepełne. Wyniki z tych lat pokazujemy na trendach z adnotacją.
+    """
+    tech_share = (
+        schools.assign(is_tech=schools["school_kind"].eq("Technikum"))
+        .groupby("year")["is_tech"]
+        .mean()
+    )
+    return set(tech_share[tech_share < threshold].index)
+
+
 # ---------------------------------------------------------------------------
 # Szybki raport kontrolny: `python data.py`
 # ---------------------------------------------------------------------------
@@ -370,6 +397,9 @@ if __name__ == "__main__":
     print("\n=== KONTROLA: braki danych (powiaty, % pustych) ===")
     na = counties.isna().mean().mul(100).round(1)
     print(na[na > 0].to_string())
+
+    print("\n=== KONTROLA: lata niepełnego pokrycia (Formuła 2023 bez techników) ===")
+    print(" ", partial_coverage_years(schools) or "brak")
 
     print("\n=== KONTROLA: wartości wymiarów szkolnych ===")
     print("typ placówki:", schools["school_type_raw"].value_counts(dropna=False).to_dict())
