@@ -42,6 +42,11 @@ def get_geojson() -> dict:
     return data.load_county_geojson()
 
 
+@st.cache_data(show_spinner=False)
+def get_wages() -> pd.DataFrame:
+    return data.load_wages()
+
+
 counties = get_counties()
 schools = get_schools()
 partial_years = data.partial_coverage_years(schools)
@@ -200,8 +205,9 @@ st.divider()
 # ---------------------------------------------------------------------------
 # Zakładki
 # ---------------------------------------------------------------------------
-tab_gap, tab_map, tab_split, tab_trend, tab_about = st.tabs(
-    ["📊 Wąskie gardło", "🗺️ Mapa powiatów", "🏫 Rozwarstwienie", "🎯 Ambicje i trendy", "ℹ️ O danych"]
+tab_gap, tab_map, tab_split, tab_trend, tab_market, tab_about = st.tabs(
+    ["📊 Wąskie gardło", "🗺️ Mapa powiatów", "🏫 Rozwarstwienie",
+     "🎯 Ambicje i trendy", "💰 Rynek", "ℹ️ O danych"]
 )
 
 # --- 1. Wąskie gardło -------------------------------------------------------
@@ -523,7 +529,40 @@ with tab_trend:
             "pełnej populacji obejmuje szkoły objęte Formułą 2023 w danym roku."
         )
 
-# --- 5. O danych ------------------------------------------------------------
+# --- 5. Rynek: wolumen × zamożność -------------------------------------------
+with tab_market:
+    if subject_label != "matematyka":
+        st.info("Ta sekcja dotyczy matematyki — wykres nie zmienia się z filtrem "
+                "przedmiotu.")
+
+    wages = get_wages()
+    wage_year = int(wages["wage_year"].iloc[0])
+    market_df = cc_year.merge(wages, on="teryt_county", how="inner").copy()
+    market_df["failers"] = market_df["math_pp_n"] * (
+        1 - market_df["math_pp_pass_rate"] / 100
+    )
+    market_df = market_df.dropna(subset=["failers", "wage"])
+
+    if len(market_df) < 5:
+        st.info("Za mało powiatów w wybranym zakresie — poszerz filtry.")
+    else:
+        st.plotly_chart(
+            charts.wage_scatter(market_df, year, wage_year), width="stretch"
+        )
+        st.caption(
+            "💡 **Wniosek:** mediany dzielą rynek na cztery segmenty. Prawy górny "
+            "róg (dużo oblewających + wysokie płace: metropolie) to naturalny "
+            "rynek korepetycji premium 1:1. Prawy dolny (dużo oblewających + "
+            "niższe płace) to segment, gdzie stacjonarne korki przegrywają "
+            "z ceną — tu najlepiej pozycjonuje się tania aplikacja do "
+            "samodzielnego treningu. To **współwystępowanie, nie "
+            "przyczynowość** — zamożność i wyniki mają wspólne zaplecze "
+            "społeczno-ekonomiczne. Uwaga: GUS liczy płace wg miejsca pracy, "
+            "nie zamieszkania — powiaty sypialniane wokół metropolii wyglądają "
+            "na uboższe, niż są."
+        )
+
+# --- 6. O danych ------------------------------------------------------------
 with tab_about:
     n_schools = schools.groupby("year")["rspo"].nunique()
     st.markdown(
@@ -536,6 +575,13 @@ with tab_about:
   zdawalność wyższa niż w lipcowych komunikatach prasowych CKE.
 - Lata: **{YEARS[0]}–{LATEST}**; {fmt_pl(len(counties))} wierszy powiatowych,
   {fmt_pl(len(schools))} szkolnych ({fmt_pl(n_schools.max())} szkół w {int(n_schools.idxmax())} r.).
+- Wynagrodzenia: **GUS Bank Danych Lokalnych** ([bdl.stat.gov.pl](https://bdl.stat.gov.pl),
+  API, zmienna 64428 „przeciętne miesięczne wynagrodzenia brutto”, rok 2024,
+  dane publiczne GUS). **Zastrzeżenie:** GUS liczy wynagrodzenia wg **miejsca
+  pracy**, nie zamieszkania (powiaty „sypialniane” wokół metropolii mają
+  zaniżone wartości); dane obejmują podmioty o więcej niż 9 pracujących.
+  Pobrane jednorazowo skryptem `scripts/fetch_bdl_wages.py` — aplikacja nie
+  odpytuje API przy starcie.
 - Granice powiatów: **Państwowy Rejestr Granic (PRG)** — dane publiczne
   GUGiK udostępniane nieodpłatnie przez [Geoportal](https://www.geoportal.gov.pl)
   (art. 40a ust. 2 pkt 1 ustawy Prawo geodezyjne i kartograficzne).

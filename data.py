@@ -489,6 +489,27 @@ def aggregate_schools_to_counties(schools: pd.DataFrame) -> pd.DataFrame:
     return agg
 
 
+def load_wages() -> pd.DataFrame:
+    """Przeciętne miesięczne wynagrodzenia brutto per powiat (GUS BDL,
+    zmienna 64428, temat P2497, najnowszy dostępny rok).
+
+    Plik data/processed/wages.parquet jest budowany JEDNORAZOWO skryptem
+    scripts/fetch_bdl_wages.py i commitowany do repo — aplikacja nie odpytuje
+    API BDL przy starcie (limity czasu/RAM na Streamlit Cloud, dane roczne
+    i tak zmieniają się raz w roku).
+
+    UWAGA metodologiczna: GUS liczy wynagrodzenia wg MIEJSCA PRACY (siedziby
+    jednostki), nie zamieszkania — powiaty "sypialniane" wokół metropolii
+    mają zaniżone wartości. Dane obejmują podmioty o >9 pracujących.
+    """
+    path = PROCESSED_DIR / "wages.parquet"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Brak pliku {path} — uruchom: python scripts/fetch_bdl_wages.py"
+        )
+    return pd.read_parquet(path)
+
+
 def load_county_geojson() -> dict:
     """Granice powiatów (GeoJSON, WGS84) z kodem TERYT w properties.JPT_KOD_JE —
     dopasowanie do ramek po kolumnie teryt_county.

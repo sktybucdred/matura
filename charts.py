@@ -261,6 +261,93 @@ def ambition_scatter(df: pd.DataFrame, year: int) -> go.Figure:
 
 
 # ---------------------------------------------------------------------------
+# 6b. Scatter: rynek — oblewający × zamożność powiatu
+# ---------------------------------------------------------------------------
+def wage_scatter(df: pd.DataFrame, exam_year: int, wage_year: int) -> go.Figure:
+    """df: powiaty (jeden rok) z kolumnami failers, wage, math_pp_n, county,
+    voivodeship. Oś X logarytmiczna (Warszawa vs powiaty to 3 rzędy wielkości).
+    Linie referencyjne na medianach dzielą rynek na ćwiartki."""
+    import math
+
+    plot_df = df.dropna(subset=["failers", "wage", "math_pp_n"])
+    plot_df = plot_df[plot_df["failers"] >= 1]  # log(0) — powiaty bez oblewających
+
+    fig = px.scatter(
+        plot_df,
+        x="failers",
+        y="wage",
+        size="math_pp_n",
+        size_max=40,
+        color="voivodeship",
+        log_x=True,
+        opacity=0.75,
+        hover_name="county",
+        hover_data={
+            "voivodeship": True,
+            "failers": ":.0f",
+            "wage": ":.0f",
+            "math_pp_n": ":,",
+        },
+        labels={
+            "failers": f"szacowana liczba oblewających matematykę PP ({exam_year}, skala log)",
+            "wage": f"przeciętne wynagrodzenie brutto, zł ({wage_year})",
+            "math_pp_n": "liczba zdających PP",
+            "voivodeship": "województwo",
+        },
+    )
+    med_x = float(plot_df["failers"].median())
+    med_y = float(plot_df["wage"].median())
+    # Pułapka plotly na osi log: kształt add_vline przyjmuje wartość SUROWĄ,
+    # ale adnotacje wymagają log10 — wbudowany annotation_text vline'a ląduje
+    # w 10^x i rozsadza zakres osi. Dlatego linia i podpis idą osobno.
+    fig.add_vline(x=med_x, line_dash="dot", line_color="#999")
+    fig.add_annotation(
+        x=math.log10(med_x), y=1.0, yref="paper", yanchor="bottom",
+        text="mediana", showarrow=False, font=dict(size=10, color="#777"),
+    )
+    fig.add_hline(y=med_y, line_dash="dot", line_color="#999",
+                  annotation_text="mediana", annotation_font_size=10)
+
+    # Etykiety skrajnych powiatów (największy wolumen, skraje zamożności
+    # i największy rynek w tańszej połowie kraju).
+    picks: dict[str, pd.Series] = {}
+    for _, row in plot_df.nlargest(2, "failers").iterrows():
+        picks[row["county"]] = row
+    picks.setdefault(
+        plot_df.loc[plot_df["wage"].idxmax(), "county"],
+        plot_df.loc[plot_df["wage"].idxmax()],
+    )
+    picks.setdefault(
+        plot_df.loc[plot_df["wage"].idxmin(), "county"],
+        plot_df.loc[plot_df["wage"].idxmin()],
+    )
+    cheap_big = plot_df[(plot_df["wage"] < med_y) & (plot_df["failers"] > med_x)]
+    if not cheap_big.empty:
+        row = cheap_big.nlargest(1, "failers").iloc[0]
+        picks.setdefault(row["county"], row)
+    for county, row in picks.items():
+        fig.add_annotation(
+            x=math.log10(float(row["failers"])),  # oś log: współrzędna = log10
+            y=float(row["wage"]),
+            text=county,
+            showarrow=True,
+            arrowhead=0,
+            arrowcolor="#888",
+            ax=0,
+            ay=-22,
+            font=dict(size=10, color="#444"),
+        )
+
+    fig = _base_layout(
+        fig,
+        f"Rynek korepetycji: wolumen × zamożność powiatu — matura {exam_year}, płace {wage_year}",
+        height=560,
+    )
+    fig.update_layout(legend=dict(font=dict(size=10)))
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # 7. Liniowy: trend zdawalności
 # ---------------------------------------------------------------------------
 def trend_line(
