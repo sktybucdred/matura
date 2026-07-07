@@ -1,5 +1,5 @@
-streamlit>=1.50
-pandas>=2.2
-plotly>=6.0
-openpyxl>=3.1
-pyarrow>=17
+streamlit>=1.50,<2
+pandas>=2.2,<3
+plotly>=6,<7
+openpyxl>=3.1,<4
+pyarrow>=17,<22

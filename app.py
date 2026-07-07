@@ -234,8 +234,18 @@ with tab_gap:
         st.plotly_chart(
             charts.subject_pass_bar(tidy, f"{scope_label}{kind_note}"), width="stretch"
         )
-        subj_mat = cc_scope[["math_pp_pass_rate", "pol_pp_pass_rate", "eng_pp_pass_rate"]]
-        share_math_worst = (subj_mat.idxmin(axis=1) == "math_pp_pass_rate").mean()
+        # dropna(how="all"): wiersze bez żadnej zdawalności (np. powiaty z samymi
+        # utajnionymi metrykami przy filtrze typu szkoły) wywalają idxmin
+        # w nowszych wersjach pandas ("Encountered all NA values").
+        subj_mat = (
+            cc_scope[["math_pp_pass_rate", "pol_pp_pass_rate", "eng_pp_pass_rate"]]
+            .dropna(how="all")
+        )
+        share_math_worst = (
+            (subj_mat.idxmin(axis=1) == "math_pp_pass_rate").mean()
+            if not subj_mat.empty
+            else float("nan")
+        )
         st.caption(
             f"💡 **Wniosek:** matematyka jest najsłabszym z trzech przedmiotów "
             f"obowiązkowych w {fmt_pl(share_math_worst * 100, 0)}% powiato-lat "
