@@ -16,6 +16,7 @@ względem pełnej populacji. Porównania LO vs technikum mają sens od 2024 r.
 
 from __future__ import annotations
 
+import json
 import re
 import zipfile
 from pathlib import Path
@@ -26,6 +27,13 @@ import pandas as pd
 # na Streamlit Community Cloud — brak ścieżek absolutnych).
 BASE_DIR = Path(__file__).resolve().parent
 RAW_DIR = BASE_DIR / "data" / "raw"
+PROCESSED_DIR = BASE_DIR / "data" / "processed"
+GEO_DIR = BASE_DIR / "data" / "geo"
+
+# Klucz TERYT w GeoJSON granic powiatów (źródło: Geoportal/PRG poprzez
+# github.com/waszkiewiczja/GeoJSON-Polska-Wojewodztwa-Powiaty-Gminy,
+# transformacja do WGS84, geometria uproszczona — 4,6 MB).
+GEOJSON_FEATURE_KEY = "properties.JPT_KOD_JE"
 
 # Pliki ~5 KB pobrane z portalu to w rzeczywistości strony HTML z błędem,
 # nie XLSX. Prawdziwe eksporty mają setki KB — odcinamy się progiem rozmiaru.
@@ -303,22 +311,37 @@ def add_school_flags(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Interfejs publiczny
+# Interfejs publiczny + cache parquet
+#
+# Parsowanie 6 plików XLSX (~20 MB) trwa dziesiątki sekund — zbyt długo na
+# zimny start aplikacji. Czyste ramki trzymamy więc w data/processed/*.parquet
+# (commitowane do repo). Surowe XLSX pozostają jedynym źródłem prawdy:
+# manifest.json zapamiętuje listę (nazwa, rozmiar) plików surowych i gdy
+# w data/raw/ pojawi się nowy plik (np. EM2023_2026_*), cache jest
+# automatycznie przebudowywany. Celowo NIE używamy mtime — po klonie gita
+# czasy modyfikacji są przypadkowe, a nazwa+rozmiar przeżywają checkout.
 # ---------------------------------------------------------------------------
-def _load_dataset(kind: str) -> pd.DataFrame:
-    """Wczytuje i łączy wszystkie roczniki danego rodzaju ('powiaty'/'szkoly')."""
+def _raw_paths(kind: str) -> list[Path]:
     paths = sorted(RAW_DIR.glob(f"*_{kind}_*.xlsx"))
     if not paths:
         raise FileNotFoundError(
             f"Nie znaleziono plików '*_{kind}_*.xlsx' w {RAW_DIR}. "
             f"Umieść eksporty z mapa.wyniki.edu.pl w data/raw/."
         )
-    frames = [load_file(p) for p in paths]
+    return paths
+
+
+def _raw_fingerprint(kind: str) -> list[list]:
+    return [[p.name, p.stat().st_size] for p in _raw_paths(kind)]
+
+
+def _load_dataset(kind: str) -> pd.DataFrame:
+    """Wczytuje i łączy wszystkie roczniki danego rodzaju ('powiaty'/'szkoly')."""
+    frames = [load_file(p) for p in _raw_paths(kind)]
     return pd.concat(frames, ignore_index=True)
 
 
-def load_counties() -> pd.DataFrame:
-    """Czysta ramka powiatowa: wiersz = powiat × rok."""
+def _build_counties() -> pd.DataFrame:
     df = _load_dataset("powiaty")
     # Wiersze bez kodu TERYT to artefakty eksportu (np. podsumowania) — precz.
     df = df.dropna(subset=["teryt_county"]).reset_index(drop=True)
@@ -331,12 +354,60 @@ def load_counties() -> pd.DataFrame:
     return add_derived_columns(df)
 
 
-def load_schools() -> pd.DataFrame:
-    """Czysta ramka szkolna: wiersz = szkoła × rok."""
+def _build_schools() -> pd.DataFrame:
     df = _load_dataset("szkoly")
     df = df.dropna(subset=["rspo"]).reset_index(drop=True)
     df = add_derived_columns(df)
     return add_school_flags(df)
+
+
+_BUILDERS = {"counties": ("powiaty", _build_counties), "schools": ("szkoly", _build_schools)}
+
+
+def _load_with_cache(name: str, use_cache: bool = True) -> pd.DataFrame:
+    kind, builder = _BUILDERS[name]
+    parquet_path = PROCESSED_DIR / f"{name}.parquet"
+    manifest_path = PROCESSED_DIR / "manifest.json"
+
+    fingerprint = _raw_fingerprint(kind)
+    if use_cache and parquet_path.exists() and manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            manifest = {}
+        if manifest.get(name) == fingerprint:
+            return pd.read_parquet(parquet_path)
+
+    df = builder()
+
+    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(parquet_path, index=False)
+    manifest = {}
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            pass
+    manifest[name] = fingerprint
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return df
+
+
+def load_counties(use_cache: bool = True) -> pd.DataFrame:
+    """Czysta ramka powiatowa: wiersz = powiat × rok."""
+    return _load_with_cache("counties", use_cache)
+
+
+def load_schools(use_cache: bool = True) -> pd.DataFrame:
+    """Czysta ramka szkolna: wiersz = szkoła × rok."""
+    return _load_with_cache("schools", use_cache)
+
+
+def load_county_geojson() -> dict:
+    """Granice powiatów (GeoJSON, WGS84) z kodem TERYT w properties.JPT_KOD_JE —
+    dopasowanie do ramek po kolumnie teryt_county."""
+    with open(GEO_DIR / "powiaty.geojson", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def partial_coverage_years(schools: pd.DataFrame, threshold: float = 0.10) -> set[int]:
@@ -364,8 +435,9 @@ if __name__ == "__main__":
     pd.set_option("display.width", 200)
     pd.set_option("display.max_columns", 50)
 
-    counties = load_counties()
-    schools = load_schools()
+    # Uruchomienie z konsoli wymusza przebudowę cache parquet z surowych XLSX.
+    counties = load_counties(use_cache=False)
+    schools = load_schools(use_cache=False)
 
     print("=== POWIATY ===")
     print("shape:", counties.shape)
