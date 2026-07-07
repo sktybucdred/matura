@@ -489,6 +489,24 @@ def aggregate_schools_to_counties(schools: pd.DataFrame) -> pd.DataFrame:
     return agg
 
 
+def weighted_corr(df: pd.DataFrame, col_a: str, col_b: str, weight_col: str) -> float:
+    """Korelacja Pearsona ważona (np. liczbą zdających) — bez ważenia
+    mikropowiaty znaczyłyby tyle samo co Warszawa i korelacje byłyby
+    zaniżone przez szum małych prób."""
+    d = df[[col_a, col_b, weight_col]].dropna()
+    if len(d) < 3 or d[weight_col].sum() <= 0:
+        return float("nan")
+    w = d[weight_col] / d[weight_col].sum()
+    mean_a = (d[col_a] * w).sum()
+    mean_b = (d[col_b] * w).sum()
+    cov = (w * (d[col_a] - mean_a) * (d[col_b] - mean_b)).sum()
+    var_a = (w * (d[col_a] - mean_a) ** 2).sum()
+    var_b = (w * (d[col_b] - mean_b) ** 2).sum()
+    if var_a <= 0 or var_b <= 0:
+        return float("nan")
+    return float(cov / (var_a * var_b) ** 0.5)
+
+
 def load_wages() -> pd.DataFrame:
     """Przeciętne miesięczne wynagrodzenia brutto per powiat (GUS BDL,
     zmienna 64428, temat P2497, najnowszy dostępny rok).

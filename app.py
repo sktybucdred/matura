@@ -205,9 +205,9 @@ st.divider()
 # ---------------------------------------------------------------------------
 # Zakładki
 # ---------------------------------------------------------------------------
-tab_gap, tab_map, tab_split, tab_trend, tab_market, tab_about = st.tabs(
+tab_gap, tab_map, tab_split, tab_trend, tab_market, tab_summary, tab_about = st.tabs(
     ["📊 Wąskie gardło", "🗺️ Mapa powiatów", "🏫 Rozwarstwienie",
-     "🎯 Ambicje i trendy", "💰 Rynek", "ℹ️ O danych"]
+     "🎯 Ambicje i trendy", "💰 Rynek", "📌 Wnioski", "ℹ️ O danych"]
 )
 
 # --- 1. Wąskie gardło -------------------------------------------------------
@@ -562,7 +562,161 @@ with tab_market:
             "na uboższe, niż są."
         )
 
-# --- 6. O danych ------------------------------------------------------------
+# --- 6. Wnioski: synteza na pełnych danych ------------------------------------
+with tab_summary:
+    st.caption(
+        f"Ta zakładka podsumowuje **pełne dane za {LATEST} r.** (cała Polska, "
+        f"wszystkie typy szkół) — celowo nie reaguje na filtry w sidebarze."
+    )
+
+    # Wszystko liczone na żywo — po dorzuceniu pliku za nowy rok wnioski
+    # przeliczą się same.
+    c_last = counties[counties["year"] == LATEST].copy()
+    s_last = schools[schools["year"] == LATEST]
+    wages_full = get_wages()
+    wage_year_full = int(wages_full["wage_year"].iloc[0])
+
+    c_last["failers"] = c_last["math_pp_n"] * (1 - c_last["math_pp_pass_rate"] / 100)
+    c_last = c_last.merge(wages_full, on="teryt_county", how="left")
+
+    total_failers = c_last["failers"].sum()
+    math_pass = data.weighted_mean(c_last, "math_pp_pass_rate", "math_pp_n")
+    pol_pass = data.weighted_mean(c_last, "pol_pp_pass_rate", "pol_pp_n")
+    eng_pass = data.weighted_mean(c_last, "eng_pp_pass_rate", "eng_pp_n")
+    share_worst = (
+        c_last[["math_pp_pass_rate", "pol_pp_pass_rate", "eng_pp_pass_rate"]]
+        .dropna(how="all")
+        .idxmin(axis=1)
+        .eq("math_pp_pass_rate")
+        .mean()
+    )
+
+    def kind_failers(kind_name: str) -> float:
+        g = s_last[s_last["school_kind"] == kind_name].dropna(
+            subset=["math_pp_pass_rate", "math_pp_n"]
+        )
+        return (g["math_pp_n"] * (1 - g["math_pp_pass_rate"] / 100)).sum()
+
+    tech_failers = kind_failers("Technikum")
+    lo_failers = kind_failers("LO")
+    tech_n = s_last.loc[s_last["school_kind"] == "Technikum", "math_pp_n"].sum()
+    lo_n = s_last.loc[s_last["school_kind"] == "LO", "math_pp_n"].sum()
+
+    corr_wage_pass = data.weighted_corr(
+        c_last, "wage", "math_pp_pass_rate", "math_pp_n"
+    )
+    corr_wage_amb = data.weighted_corr(c_last, "wage", "ambition_ratio", "math_pp_n")
+
+    st.markdown(
+        f"""
+### Co mówią dane ({LATEST})
+
+1. **Matematyka to wąskie gardło matury.** Zdawalność {fmt_pl(math_pass, 1)}%
+   wobec {fmt_pl(pol_pass, 1)}% z polskiego i {fmt_pl(eng_pass, 1)}%
+   z angielskiego; najsłabszy przedmiot w {fmt_pl(share_worst * 100, 0)}%
+   powiatów. Rynek „ratowania matury z matematyki” to
+   **~{fmt_pl(total_failers / 1000, 1)} tys. osób rocznie** — i rośnie
+   (trend zniżkowy zdawalności nawet w samych LO).
+2. **Geografia ma znaczenie i jest trwała.** Rozstrzał między powiatami sięga
+   ~35 p.p., a korelacja wyników rok-do-roku ~0,7 — słabe powiaty nie są
+   przypadkiem statystycznym, tylko strukturalną cechą lokalną.
+3. **Technika to (ponad) połowa rynku.** Przy {fmt_pl(tech_n)} zdających
+   (wobec {fmt_pl(lo_n)} w LO) technika generują
+   **{fmt_pl(tech_failers / 1000, 1)} tys. oblewających** —
+   {fmt_pl(100 * tech_failers / (tech_failers + lo_failers), 0)}% sumy
+   LO+technika, czyli w liczbach bezwzględnych więcej niż licea —
+   a luka do LO rośnie z roku na rok.
+4. **Zamożność silniej wiąże się z ambicjami niż ze zdawalnością.** Korelacja
+   ważona płac ze zdawalnością to ledwie {fmt_pl(corr_wage_pass, 2)}, ale
+   z odsetkiem podchodzących do rozszerzenia — już {fmt_pl(corr_wage_amb, 2)}.
+   Bogatszy powiat niekoniecznie lepiej zdaje podstawę, ale znacznie częściej
+   celuje w studia techniczne. (Współwystępowanie, nie przyczynowość.)
+5. **Dwa produkty, dwie geografie.** Korepetycje premium 1:1 mają rynek tam,
+   gdzie wolumen spotyka zamożność (metropolie). Tania aplikacja do
+   samodzielnego treningu wygrywa tam, gdzie oblewających dużo, a płace
+   poniżej mediany — oraz na wsi, gdzie podaż stacjonarnych korepetycji
+   jest najmniejsza (szkoły wiejskie słabsze nawet w ramach tego samego
+   typu szkoły).
+
+### Gdzie targetować (powiaty, {LATEST})
+"""
+    )
+
+    with_wage = c_last.dropna(subset=["failers", "wage"])
+    med_fail = float(with_wage["failers"].median())
+    med_wage = float(with_wage["wage"].median())
+
+    seg_premium = (
+        with_wage[(with_wage["failers"] > med_fail) & (with_wage["wage"] >= med_wage)]
+        .nlargest(8, "failers")
+    )
+    seg_value = (
+        with_wage[(with_wage["failers"] > med_fail) & (with_wage["wage"] < med_wage)]
+        .nlargest(8, "failers")
+    )
+    seg_urgent = (
+        c_last[c_last["math_pp_n"] >= 100].dropna(subset=["math_pp_pass_rate"])
+        .nsmallest(8, "math_pp_pass_rate")
+    )
+
+    seg_cols = {
+        "county": st.column_config.TextColumn("powiat"),
+        "voivodeship": st.column_config.TextColumn("województwo"),
+        "failers": st.column_config.NumberColumn("oblewający", format="%.0f"),
+        "wage": st.column_config.NumberColumn(f"płace {wage_year_full} (zł)", format="%.0f"),
+        "math_pp_pass_rate": st.column_config.NumberColumn("zdawalność (%)", format="%.1f"),
+    }
+    show = ["county", "voivodeship", "failers", "wage", "math_pp_pass_rate"]
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown("**🏙️ Korepetycje premium / stacjonarne** — duży wolumen, "
+                    "płace ≥ mediany")
+        st.dataframe(seg_premium[show], hide_index=True, column_config=seg_cols,
+                     width="stretch")
+        st.caption(
+            "Metropolie: najwięcej klientów o największej sile nabywczej — "
+            "i najwięcej konkurencji. Reklama lokalna (osiedla, szkoły) "
+            "zamiast szerokiego zasięgu."
+        )
+    with col_b:
+        st.markdown("**📱 Aplikacja online / niska cena** — duży wolumen, "
+                    "płace < mediany")
+        st.dataframe(seg_value[show], hide_index=True, column_config=seg_cols,
+                     width="stretch")
+        st.caption(
+            "Duże rynki o niższej sile nabywczej: stacjonarne korki przegrywają "
+            "tu z ceną — naturalny target kampanii online (geotargeting "
+            "na powiat, komunikat cenowy)."
+        )
+
+    st.markdown("**🚨 Największa pilność** — najniższa zdawalność (powiaty ≥ 100 zdających)")
+    st.dataframe(seg_urgent[show], hide_index=True, column_config=seg_cols,
+                 width="stretch")
+    st.caption(
+        "Tu problem jest najostrzejszy: co trzeci–czwarty maturzysta oblewa. "
+        "Mały wolumen bezwzględny, ale minimalna podaż korepetytorów i duża "
+        "potrzeba — dobre miejsce na pilotaż darmowej wersji aplikacji "
+        "(budowanie marki tam, gdzie nikt inny nie dociera)."
+    )
+
+    st.markdown(
+        """
+### Czego te dane NIE mówią (uczciwe ograniczenia)
+
+- **Nie widzimy podaży korepetycji** — "mała podaż stacjonarna" na wsi i w
+  słabszych powiatach to wniosek z zamożności i gęstości zaludnienia (proxy),
+  nie z danych o liczbie korepetytorów.
+- **Dane są zagregowane** per powiat/szkoła — wnioski dotyczą rynków, nie
+  pojedynczych uczniów (błąd ekologiczny).
+- **Płace GUS liczone wg miejsca pracy** — powiaty sypialniane wokół
+  metropolii są w rzeczywistości zamożniejsze, niż pokazuje oś Y.
+- **Brak cen korepetycji i danych o sezonowości** — timing kampanii (np.
+  wrzesień/poprawki, luty/studniówki) trzeba oprzeć na wiedzy branżowej.
+"""
+    )
+
+# --- 7. O danych ------------------------------------------------------------
 with tab_about:
     n_schools = schools.groupby("year")["rspo"].nunique()
     st.markdown(
