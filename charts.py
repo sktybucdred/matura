@@ -99,7 +99,10 @@ def voivodeship_heatmap(pivot: pd.DataFrame, subject_label: str) -> go.Figure:
         pivot,
         text_auto=".1f",
         aspect="auto",
-        color_continuous_scale="RdYlGn",
+        # RdYlBu zamiast RdYlGn: ta sama semantyka (czerwony = źle), ale
+        # czytelna też przy daltonizmie czerwono-zielonym (ColorBrewer:
+        # colorblind-safe).
+        color_continuous_scale="RdYlBu",
         labels=dict(x="rok egzaminu", y="", color="zdawalność (%)"),
     )
     fig.update_xaxes(side="bottom", tickvals=list(pivot.columns), type="category")
@@ -125,9 +128,10 @@ def county_map(
     value_col: str,
     value_label: str,
     title: str,
-    color_scale: str = "RdYlGn",
+    color_scale: str = "RdYlBu",
     hover_extra: dict | None = None,
     clip_quantiles: tuple[float, float] | None = (0.02, 0.98),
+    value_fmt: str = ":.1f",
 ) -> go.Figure:
     """df: kolumny [teryt_county, county, voivodeship, value_col, ...].
 
@@ -155,7 +159,9 @@ def county_map(
         hover_data={
             "teryt_county": False,
             "voivodeship": True,
-            value_col: ":.1f",
+            # value_fmt: dla wolumenu osób ":.0f" (bez ułamkowych ludzi),
+            # dla odsetków domyślne ":.1f".
+            value_col: value_fmt,
             **(hover_extra or {}),
         },
         labels={value_col: value_label, "voivodeship": "województwo"},
@@ -446,16 +452,26 @@ def trend_line(
         dict(color=COLOR_POL, dash="dash", symbol="square"),
         dict(color=COLOR_NEUTRAL, dash="dot", symbol="diamond"),
     ]
+    # Kolor po NAZWIE serii — spójny z SPLIT_COLORS histogramu/boxplota
+    # (Technikum zawsze pomarańczowe, LO niebieskie); odniesienie populacyjne
+    # neutralnym szarym. Styl linii/symbolu pozostaje pozycyjny.
+    series_colors = {
+        "tylko LO": SPLIT_COLORS["LO"],
+        "tylko Technikum": SPLIT_COLORS["Technikum"],
+        "wszystkie szkoły": COLOR_NEUTRAL,
+        "cała populacja": COLOR_MATH,
+    }
     for idx, col in enumerate(trend.columns):
         st_ = positional_styles[min(idx, len(positional_styles) - 1)]
+        line_color = series_colors.get(col, st_["color"])
         fig.add_trace(
             go.Scatter(
                 x=trend.index,
                 y=trend[col],
                 mode="lines+markers",
                 name=col,
-                line=dict(color=st_["color"], dash=st_["dash"], width=2.5),
-                marker=dict(symbol=st_["symbol"], size=9),
+                line=dict(color=line_color, dash=st_["dash"], width=2.5),
+                marker=dict(symbol=st_["symbol"], size=9, color=line_color),
                 hovertemplate="%{fullData.name}, rok %{x}: <b>%{y:.1f}%</b><extra></extra>",
             )
         )
